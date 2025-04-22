@@ -483,7 +483,7 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
         image_embeds = self.image_embedder(image_latents).image_embeds
         image_embeds = image_embeds.to(device=device)
         
-        image_embeds = image_embeds * torch.tensor(image_siglip_scale, device=device, dtype=image_embeds.dtype)[:, None, None]
+        image_embeds.mul_(torch.tensor(image_siglip_scale, device=device, dtype=image_embeds.dtype)[:, None, None])
 
         # 4. Prepare text embeddings
         if hasattr(self, "text_encoder") and self.text_encoder is not None:
@@ -502,8 +502,8 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
                 lora_scale=None,
             )
             
-            t5_embeds = t5_embeds * torch.tensor(text_t5_scale, device=device, dtype=t5_embeds.dtype)[:, None, None]
-            clip_embeds = clip_embeds * torch.tensor(text_clip_scale, device=device, dtype=clip_embeds.dtype)[:, None]
+            t5_embeds.mul_(torch.tensor(text_t5_scale, device=device, dtype=t5_embeds.dtype)[:, None, None])
+            clip_embeds.mul_(torch.tensor(text_clip_scale, device=device, dtype=clip_embeds.dtype)[:, None])
             
             prompt_embeds = t5_embeds
             pooled_prompt_embeds = clip_embeds
@@ -521,10 +521,8 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
         # concat image and text embeddings (после индивидуального масштабирования)
         prompt_embeds = torch.cat([prompt_embeds, image_embeds], dim=1)
 
-        prompt_embeds *= torch.tensor(prompt_embeds_scale, device=device, dtype=image_embeds.dtype)[:, None, None]
-        pooled_prompt_embeds *= torch.tensor(pooled_prompt_embeds_scale, device=device, dtype=image_embeds.dtype)[
-            :, None
-        ]
+        prompt_embeds.mul_(torch.tensor(prompt_embeds_scale, device=device, dtype=image_embeds.dtype)[:, None, None])
+        pooled_prompt_embeds.mul_(torch.tensor(pooled_prompt_embeds_scale, device=device, dtype=image_embeds.dtype)[:, None])
 
         # weighted sum
         prompt_embeds = torch.sum(prompt_embeds, dim=0, keepdim=True)
