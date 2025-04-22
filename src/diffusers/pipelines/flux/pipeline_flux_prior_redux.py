@@ -151,6 +151,9 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
         pooled_prompt_embeds=None,
         prompt_embeds_scale=1.0,
         pooled_prompt_embeds_scale=1.0,
+        text_t5_scale=1.0,
+        text_clip_scale=1.0,
+        image_siglip_scale=1.0,
     ):
         if prompt is not None and prompt_embeds is not None:
             raise ValueError(
@@ -179,6 +182,19 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
         ):
             raise ValueError(
                 f"number of weights must be equal to number of images, but {len(prompt_embeds_scale)} weights were provided and {len(image)} images"
+            )
+        
+        if isinstance(text_t5_scale, list) and (isinstance(image, list) and len(text_t5_scale) != len(image)):
+            raise ValueError(
+                f"number of text_t5_scale weights must be equal to number of images, but {len(text_t5_scale)} weights were provided and {len(image)} images"
+            )
+        if isinstance(text_clip_scale, list) and (isinstance(image, list) and len(text_clip_scale) != len(image)):
+            raise ValueError(
+                f"number of text_clip_scale weights must be equal to number of images, but {len(text_clip_scale)} weights were provided and {len(image)} images"
+            )
+        if isinstance(image_siglip_scale, list) and (isinstance(image, list) and len(image_siglip_scale) != len(image)):
+            raise ValueError(
+                f"number of image_siglip_scale weights must be equal to number of images, but {len(image_siglip_scale)} weights were provided and {len(image)} images"
             )
 
     def encode_image(self, image, device, num_images_per_prompt):
@@ -379,6 +395,9 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
         pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
         prompt_embeds_scale: Optional[Union[float, List[float]]] = 1.0,
         pooled_prompt_embeds_scale: Optional[Union[float, List[float]]] = 1.0,
+        text_t5_scale: Optional[Union[float, List[float]]] = 1.0,
+        text_clip_scale: Optional[Union[float, List[float]]] = 1.0,
+        image_siglip_scale: Optional[Union[float, List[float]]] = 1.0,
         return_dict: bool = True,
     ):
         r"""
@@ -400,6 +419,16 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
                 Pre-generated text embeddings. Can be used to easily tweak text inputs, *e.g.* prompt weighting.
             pooled_prompt_embeds (`torch.FloatTensor`, *optional*):
                 Pre-generated pooled text embeddings.
+            prompt_embeds_scale (`float` or `List[float]`, *optional*, defaults to 1.0):
+                Scaling factor to apply to all text embeddings combined.
+            pooled_prompt_embeds_scale (`float` or `List[float]`, *optional*, defaults to 1.0):
+                Scaling factor to apply to pooled text embeddings.
+            text_t5_scale (`float` or `List[float]`, *optional*, defaults to 1.0):
+                Scaling factor to apply to T5 text embeddings before concatenation with image embeddings.
+            text_clip_scale (`float` or `List[float]`, *optional*, defaults to 1.0):
+                Scaling factor to apply to CLIP text embeddings.
+            image_siglip_scale (`float` or `List[float]`, *optional*, defaults to 1.0):
+                Scaling factor to apply to SIGLIP image embeddings before concatenation with text embeddings.
             return_dict (`bool`, *optional*, defaults to `True`):
                 Whether or not to return a [`~pipelines.flux.FluxPriorReduxPipelineOutput`] instead of a plain tuple.
 
@@ -420,6 +449,9 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
             pooled_prompt_embeds=pooled_prompt_embeds,
             prompt_embeds_scale=prompt_embeds_scale,
             pooled_prompt_embeds_scale=pooled_prompt_embeds_scale,
+            text_t5_scale=text_t5_scale,
+            text_clip_scale=text_clip_scale,
+            image_siglip_scale=image_siglip_scale,
         )
 
         # 2. Define call parameters
@@ -431,10 +463,17 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
             batch_size = image.shape[0]
         if prompt is not None and isinstance(prompt, str):
             prompt = batch_size * [prompt]
+        
         if isinstance(prompt_embeds_scale, float):
             prompt_embeds_scale = batch_size * [prompt_embeds_scale]
         if isinstance(pooled_prompt_embeds_scale, float):
             pooled_prompt_embeds_scale = batch_size * [pooled_prompt_embeds_scale]
+        if isinstance(text_t5_scale, float):
+            text_t5_scale = batch_size * [text_t5_scale]
+        if isinstance(text_clip_scale, float):
+            text_clip_scale = batch_size * [text_clip_scale]
+        if isinstance(image_siglip_scale, float):
+            image_siglip_scale = batch_size * [image_siglip_scale]
 
         device = self._execution_device
 
@@ -443,12 +482,14 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
 
         image_embeds = self.image_embedder(image_latents).image_embeds
         image_embeds = image_embeds.to(device=device)
+        
+        image_embeds = image_embeds * torch.tensor(image_siglip_scale, device=device, dtype=image_embeds.dtype)[:, None, None]
 
-        # 3. Prepare (dummy) text embeddings
+        # 4. Prepare text embeddings
         if hasattr(self, "text_encoder") and self.text_encoder is not None:
             (
-                prompt_embeds,
-                pooled_prompt_embeds,
+                t5_embeds,
+                clip_embeds,
                 _,
             ) = self.encode_prompt(
                 prompt=prompt,
@@ -460,6 +501,12 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
                 max_sequence_length=512,
                 lora_scale=None,
             )
+            
+            t5_embeds = t5_embeds * torch.tensor(text_t5_scale, device=device, dtype=t5_embeds.dtype)[:, None, None]
+            clip_embeds = clip_embeds * torch.tensor(text_clip_scale, device=device, dtype=clip_embeds.dtype)[:, None]
+            
+            prompt_embeds = t5_embeds
+            pooled_prompt_embeds = clip_embeds
         else:
             if prompt is not None:
                 logger.warning(
@@ -471,7 +518,7 @@ class FluxPriorReduxPipeline(DiffusionPipeline):
             # pooled_prompt_embeds is 768, clip text encoder hidden size
             pooled_prompt_embeds = torch.zeros((batch_size, 768), device=device, dtype=image_embeds.dtype)
 
-        # scale & concatenate image and text embeddings
+        # concat image and text embeddings (после индивидуального масштабирования)
         prompt_embeds = torch.cat([prompt_embeds, image_embeds], dim=1)
 
         prompt_embeds *= torch.tensor(prompt_embeds_scale, device=device, dtype=image_embeds.dtype)[:, None, None]
